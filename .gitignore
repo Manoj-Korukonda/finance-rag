@@ -4,3 +4,4 @@ __pycache__/
 faiss_index/
 .env
 .DS_Store
+API_KEY.txt
