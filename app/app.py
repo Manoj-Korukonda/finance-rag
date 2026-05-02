@@ -79,7 +79,7 @@ if query and st.session_state.db_ready:
     # Generate answer
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            answer = ask_question(query)
+            answer = ask_question(query, st.session_state.db)
             st.markdown(answer)
 
     # Save assistant response
