@@ -1,149 +1,89 @@
+import sys
+import os
+
+# ✅ Fix: make src import work on Streamlit Cloud
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import streamlit as st
-import tempfile
-
 from src.pipeline import ask_question
+from src.retriever import load_vectorstore
+from src.build_index import create_vectorstore
 from src.ingest import load_and_split
-from src.retriever import create_vectorstore
-from src.llm import generate_answer
 
-st.set_page_config(page_title="Finance RAG", layout="wide")
+# -------------------------------
+# PAGE CONFIG
+# -------------------------------
+st.set_page_config(page_title="Finance RAG Chatbot", layout="wide")
 
-# ---------------------------
-# CLEAN CSS (NO GAP + CHAT UI)
-# ---------------------------
-st.markdown("""
-<style>
+st.title("📊 Finance RAG Chatbot")
 
-/* Reduce default spacing */
-.block-container {
-    padding-top: 1rem;
-    padding-bottom: 0rem;
-}
+# -------------------------------
+# SESSION STATE INIT
+# -------------------------------
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-/* Chat container */
-.chat-container {
-    max-height: calc(100vh - 200px);
-    overflow-y: auto;
-    padding: 10px;
-    margin-bottom: 80px;
-}
+if "db_ready" not in st.session_state:
+    st.session_state.db_ready = False
 
-/* Chat bubbles */
-.user-msg {
-    background-color: #DCF8C6;
-    padding: 10px;
-    border-radius: 10px;
-    margin: 5px;
-    text-align: right;
-}
-
-.bot-msg {
-    background-color: #F1F0F0;
-    padding: 10px;
-    border-radius: 10px;
-    margin: 5px;
-    text-align: left;
-}
-
-/* Fixed input bar */
-.input-box {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    width: 100%;
-    background: white;
-    padding: 10px;
-    border-top: 1px solid #ccc;
-    z-index: 999;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-st.title("📊 Finance RAG Chat")
-
-# ---------------------------
-# SESSION STATE
-# ---------------------------
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-if "db" not in st.session_state:
-    st.session_state.db = None
-
-if "last_file" not in st.session_state:
-    st.session_state.last_file = None
-
-# ---------------------------
-# CACHE PDF
-# ---------------------------
-@st.cache_resource
-def process_pdf(file_bytes):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(file_bytes)
-        file_path = tmp_file.name
-
-    chunks = load_and_split(file_path)
-    db = create_vectorstore(chunks)
-    return db
-
-# ---------------------------
+# -------------------------------
 # FILE UPLOAD
-# ---------------------------
-uploaded_file = st.file_uploader("📂 Upload PDF", type="pdf")
+# -------------------------------
+uploaded_file = st.file_uploader("Upload your PDF", type=["pdf"])
 
-if uploaded_file:
-    if st.session_state.last_file != uploaded_file.name:
+# -------------------------------
+# BUILD VECTOR DB (ONLY ONCE)
+# -------------------------------
+if uploaded_file and not st.session_state.db_ready:
+    with st.spinner("Processing PDF..."):
+        # Save temp file
+        with open("temp.pdf", "wb") as f:
+            f.write(uploaded_file.read())
 
-        with st.spinner("🔄 Processing PDF (only once)..."):
-            db = process_pdf(uploaded_file.read())
+        docs = load_and_split("temp.pdf")
+        create_vectorstore(docs)
 
-        st.session_state.db = db
-        st.session_state.last_file = uploaded_file.name
-        st.session_state.history = []
+        st.session_state.db_ready = True
 
-        st.success("✅ PDF ready!")
+    st.success("✅ PDF processed! You can now ask questions.")
 
-# Divider (removes weird gap feel)
-st.markdown("<hr>", unsafe_allow_html=True)
+# -------------------------------
+# LOAD VECTORSTORE (ONLY ONCE)
+# -------------------------------
+if st.session_state.db_ready and "db_loaded" not in st.session_state:
+    st.session_state.db = load_vectorstore()
+    st.session_state.db_loaded = True
 
-# ---------------------------
+# -------------------------------
 # CHAT DISPLAY
-# ---------------------------
-st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+# -------------------------------
+chat_container = st.container()
 
-for q, a, docs in st.session_state.history:
-    st.markdown(f'<div class="user-msg">🧑 {q}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="bot-msg">🤖 {a}</div>', unsafe_allow_html=True)
+with chat_container:
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-st.markdown('</div>', unsafe_allow_html=True)
+# -------------------------------
+# FIXED INPUT BAR (BOTTOM)
+# -------------------------------
+query = st.chat_input("Ask a question from the PDF...")
 
-# ---------------------------
-# FIXED INPUT (FORM)
-# ---------------------------
-st.markdown('<div class="input-box">', unsafe_allow_html=True)
+if query and st.session_state.db_ready:
+    # Show user message
+    st.session_state.messages.append({"role": "user", "content": query})
 
-with st.form("chat_form", clear_on_submit=True):
-    col1, col2 = st.columns([8, 1])
+    with st.chat_message("user"):
+        st.markdown(query)
 
-    with col1:
-        query = st.text_input("💬 Ask something...")
+    # Generate answer
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            answer = ask_question(query)
+            st.markdown(answer)
 
-    with col2:
-        send = st.form_submit_button("Send")
+    # Save assistant response
+    st.session_state.messages.append({"role": "assistant", "content": answer})
 
-    if send and query:
-        with st.spinner("🤖 Thinking..."):
-
-            if st.session_state.db:
-                docs = st.session_state.db.similarity_search(query, k=5)
-                context = "\n\n".join([doc.page_content for doc in docs])
-                answer = generate_answer(context, query)
-            else:
-                answer, docs = ask_question(query)
-
-        st.session_state.history.append((query, answer, docs))
-
-        st.rerun()
-
-st.markdown('</div>', unsafe_allow_html=True)
+elif query and not st.session_state.db_ready:
+    st.warning("⚠️ Please upload and process a PDF first.")
